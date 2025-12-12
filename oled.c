@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include "big_font.h"
 
+/* ssd1306_i2c.h já faz a detecção de plataforma e inclui os headers corretos. */
+#include "ssd1306_i2c.h"
+
 // Internal buffer and render area
 static uint8_t ssd_buffer[ssd1306_buffer_length];
 static struct render_area area = {
@@ -23,12 +26,22 @@ typedef struct {
 static text_line_t text_buffer[max_text_lines];
 
 void oled_init(void) {
-    // Initialize I2C pins and bus is done by ssd1306_i2c.h includes
+
+#if defined(SSD1306_PLATFORM_PICO)
+    /* Inicialização completa do barramento I2C usando Pico SDK */
     i2c_init(i2c1, ssd1306_i2c_clock * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA);
     gpio_pull_up(I2C_SCL);
+
+#elif defined(SSD1306_PLATFORM_STM32)
+    /*
+     * Para STM32F411/STM32F429 assumimos que o I2C já foi configurado
+     * pelo código gerado pelo STM32CubeMX (ex.: MX_i2c1_Init em main.c).
+     * Aqui apenas inicializamos o driver SSD1306 e o framebuffer.
+     */
+#endif
 
     calculate_render_area_buffer_length(&area);
     ssd1306_init();

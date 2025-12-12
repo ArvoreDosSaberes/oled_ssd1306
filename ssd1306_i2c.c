@@ -1,15 +1,45 @@
-#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include <assert.h>
-#include "pico/stdlib.h"
-#include "pico/binary_info.h"
-#include "hardware/i2c.h"
+#include <stdbool.h>
+
+/*
+ * A escolha de headers específicos é feita em ssd1306_i2c.h
+ * via macros de plataforma (SSD1306_PLATFORM_PICO / SSD1306_PLATFORM_STM32).
+ */
 #include "ssd1306_font.h"
 #include "big_font.h"
 #include "ssd1306_i2c.h"
 #include "big_font.h"
+
+/* Handle de I2C para STM32: declarado externamente (CubeMX gera hi2c1, usado como padrão). */
+#if defined(SSD1306_PLATFORM_STM32)
+extern I2C_HandleTypeDef hi2c1;
+#endif
+
+/* Endereço I2C atualmente selecionado para o display (7 bits). */
+static uint8_t ssd1306_current_address = 0x3C;
+
+/**
+ * @brief Define dinamicamente o endereço I2C do display.
+ * @param address Endereço 7 bits (0x03 - 0x77).
+ * @return true se o endereço é válido e foi aplicado, false caso contrário.
+ */
+bool ssd1306_set_i2c_address(uint8_t address) {
+    if (address < 0x03 || address > 0x77) {
+        return false;
+    }
+    ssd1306_current_address = address;
+    return true;
+}
+
+/**
+ * @brief Obtém o endereço I2C atual configurado para o display.
+ * @return Endereço de 7 bits configurado previamente ou padrão (0x3C).
+ */
+uint8_t ssd1306_get_i2c_address(void) {
+    return ssd1306_current_address;
+}
 
 // Calcular quanto do buffer será destinado à área de renderização
 void calculate_render_area_buffer_length(struct render_area *area) {
@@ -19,7 +49,22 @@ void calculate_render_area_buffer_length(struct render_area *area) {
 // Processo de escrita do i2c espera um byte de controle, seguido por dados
 void ssd1306_send_command(uint8_t command) {
     uint8_t buffer[2] = {0x80, command};
+
+#if defined(SSD1306_PLATFORM_PICO)
     i2c_write_blocking(i2c1, ssd1306_i2c_address, buffer, 2, false);
+#elif defined(SSD1306_PLATFORM_STM32)
+    if (HAL_I2C_Master_Transmit(&hi2c1,
+                                (uint16_t)(ssd1306_i2c_address << 1),
+                                buffer,
+                                2,
+                                100) != HAL_OK) {
+        /* Em ambiente embarcado simples, evitamos loops infinitos aqui.
+         * Em caso de erro, apenas retornamos; o display pode não inicializar,
+         * mas o sistema continua rodando.
+         */
+        return;
+    }
+#endif
 }
 
 // Envia uma lista de comandos ao hardware
@@ -36,7 +81,18 @@ void ssd1306_send_buffer(uint8_t ssd[], int buffer_length) {
     temp_buffer[0] = 0x40;
     memcpy(temp_buffer + 1, ssd, buffer_length);
 
+#if defined(SSD1306_PLATFORM_PICO)
     i2c_write_blocking(i2c1, ssd1306_i2c_address, temp_buffer, buffer_length + 1, false);
+#elif defined(SSD1306_PLATFORM_STM32)
+    if (HAL_I2C_Master_Transmit(&hi2c1,
+                                (uint16_t)(ssd1306_i2c_address << 1),
+                                temp_buffer,
+                                (uint16_t)(buffer_length + 1),
+                                100) != HAL_OK) {
+        free(temp_buffer);
+        return;
+    }
+#endif
 
     free(temp_buffer);
 }
@@ -135,8 +191,9 @@ void ssd1306_draw_line(uint8_t *ssd, int x_0, int y_0, int x_1, int y_1, bool se
     }
 }
 
-// Adquire os pixels para um caractere (de acordo com ssd1306_font.h)
-inline int ssd1306_get_font(uint8_t character)
+// Adquire o índice de fonte para um caractere (de acordo com ssd1306_font.h).
+// Como só é utilizada neste módulo, mantemos ligação interna.
+static inline int ssd1306_get_font(uint8_t character)
 {
   if (character >= ' ' && character <= '~') {
     return character - ' ';
@@ -202,11 +259,28 @@ void ssd1306_draw_big_char(uint8_t *ssd, int16_t x, int16_t y, uint8_t character
     }
 }
 
+/*
+ * As funções abaixo (ssd1306_command, ssd1306_config, ssd1306_init_bm, etc.)
+ * podem ser usadas em ambas as plataformas, com o tipo de porta I2C
+ * adaptado via ssd1306_t (i2c_inst_t* no Pico, I2C_HandleTypeDef* no STM32).
+ */
+#if defined(SSD1306_PLATFORM_PICO) || defined(SSD1306_PLATFORM_STM32)
+
 // Comando de configuração com base na estrutura ssd1306_t
 void ssd1306_command(ssd1306_t *ssd, uint8_t command) {
   ssd->port_buffer[1] = command;
+  
+#if defined(SSD1306_PLATFORM_PICO)
   i2c_write_blocking(
 	ssd->i2c_port, ssd->address, ssd->port_buffer, 2, false );
+#elif defined(SSD1306_PLATFORM_STM32)
+  HAL_I2C_Master_Transmit(
+	ssd->i2c_port,
+	(uint16_t)(ssd->address << 1),
+	ssd->port_buffer,
+	2,
+	HAL_MAX_DELAY);
+#endif
 }
 
 // Função de configuração do display para o caso do bitmap
@@ -239,7 +313,21 @@ void ssd1306_config(ssd1306_t *ssd) {
 }
 
 // Inicializa o display para o caso de exibição de bitmap
-void ssd1306_init_bm(ssd1306_t *ssd, uint8_t width, uint8_t height, bool external_vcc, uint8_t address, i2c_inst_t *i2c) {
+#if defined(SSD1306_PLATFORM_PICO)
+void ssd1306_init_bm(ssd1306_t *ssd,
+                     uint8_t width,
+                     uint8_t height,
+                     bool external_vcc,
+                     uint8_t address,
+                     i2c_inst_t *i2c) {
+#elif defined(SSD1306_PLATFORM_STM32)
+void ssd1306_init_bm(ssd1306_t *ssd,
+                     uint8_t width,
+                     uint8_t height,
+                     bool external_vcc,
+                     uint8_t address,
+                     I2C_HandleTypeDef *i2c) {
+#endif
     ssd->width = width;
     ssd->height = height;
     ssd->pages = height / 8U;
@@ -259,8 +347,17 @@ void ssd1306_send_data(ssd1306_t *ssd) {
     ssd1306_command(ssd, ssd1306_set_page_address);
     ssd1306_command(ssd, 0);
     ssd1306_command(ssd, ssd->pages - 1);
+  #if defined(SSD1306_PLATFORM_PICO)
     i2c_write_blocking(
     ssd->i2c_port, ssd->address, ssd->ram_buffer, ssd->bufsize, false );
+  #elif defined(SSD1306_PLATFORM_STM32)
+    HAL_I2C_Master_Transmit(
+    ssd->i2c_port,
+    (uint16_t)(ssd->address << 1),
+    ssd->ram_buffer,
+    (uint16_t)ssd->bufsize,
+    HAL_MAX_DELAY);
+  #endif
 }
 
 // Desenha o bitmap (a ser fornecido em display_oled.c) no display
@@ -271,3 +368,5 @@ void ssd1306_draw_bitmap(ssd1306_t *ssd, const uint8_t *bitmap) {
         ssd1306_send_data(ssd);
     }
 }
+
+#endif /* SSD1306_PLATFORM_PICO */

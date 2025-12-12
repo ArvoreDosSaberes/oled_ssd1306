@@ -12,6 +12,25 @@ extern void ssd1306_draw_char(uint8_t *ssd, int16_t x, int16_t y, uint8_t charac
 extern void ssd1306_draw_string(uint8_t *ssd, int16_t x, int16_t y, char *string);
 extern void ssd1306_command(ssd1306_t *ssd, uint8_t command);
 extern void ssd1306_config(ssd1306_t *ssd);
-extern void ssd1306_init_bm(ssd1306_t *ssd, uint8_t width, uint8_t height, bool external_vcc, uint8_t address, i2c_inst_t *i2c);
+/*
+ * Inicialização em modo bitmap: o tipo da porta I2C depende da plataforma.
+ *  - Pico: i2c_inst_t*
+ *  - STM32: I2C_HandleTypeDef*
+ */
+#if defined(SSD1306_PLATFORM_PICO)
+extern void ssd1306_init_bm(ssd1306_t *ssd,
+                            uint8_t width,
+                            uint8_t height,
+                            bool external_vcc,
+                            uint8_t address,
+                            i2c_inst_t *i2c);
+#elif defined(SSD1306_PLATFORM_STM32)
+extern void ssd1306_init_bm(ssd1306_t *ssd,
+                            uint8_t width,
+                            uint8_t height,
+                            bool external_vcc,
+                            uint8_t address,
+                            I2C_HandleTypeDef *i2c);
+#endif
 extern void ssd1306_send_data(ssd1306_t *ssd);
 extern void ssd1306_draw_bitmap(ssd1306_t *ssd, const uint8_t *bitmap);
